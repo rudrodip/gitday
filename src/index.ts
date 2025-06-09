@@ -2,24 +2,71 @@
 // daily-logger
 // log daily progress
 
-import { Command } from 'commander';
-import { simpleGit, SimpleGit } from 'simple-git';
 import { writeFileSync } from 'fs';
-
-const program = new Command();
-const git: SimpleGit = simpleGit();
+import { execSync } from 'child_process';
 
 const IGNORE_FILES = [
   'package-lock.json',
   'yarn.lock',
   'pnpm-lock.yaml',
-  'bun.lockb',
+  'bun.lock',
   'deno.lock'
 ];
 
+interface CliOptions {
+  output?: string;
+  log?: boolean;
+  help?: boolean;
+}
+
+function parseArgs(args: string[]): { command: string; options: CliOptions } {
+  const command = args[2] || 'help';
+  const options: CliOptions = {};
+  
+  for (let i = 3; i < args.length; i++) {
+    const arg = args[i];
+    
+    if (arg === '-o' || arg === '--output') {
+      options.output = args[++i];
+    } else if (arg === '-l' || arg === '--log') {
+      options.log = true;
+    } else if (arg === '-h' || arg === '--help') {
+      options.help = true;
+    }
+  }
+  
+  return { command, options };
+}
+
+function showHelp(): void {
+  console.log(`
+daily-logger v1.0.0
+Generate daily progress logs from git commits and diffs
+
+Usage:
+  daily-logger <command> [options]
+
+Commands:
+  today      Generate log for today's commits
+  unpushed   Generate log for unpushed commits  
+  both       Generate log for both today's and unpushed commits
+  help       Show this help message
+
+Options:
+  -o, --output <file>   Output file (default: prompt.txt)
+  -l, --log             Log to console instead of file
+  -h, --help            Show help message
+
+Examples:
+  daily-logger today
+  daily-logger unpushed -o summary.txt
+  daily-logger both --log
+`);
+}
+
 async function checkGitRepo(): Promise<boolean> {
   try {
-    await git.status();
+    execSync('git status', { stdio: 'ignore' });
     return true;
   } catch {
     console.error('❌ Not in a git repository. This tool only works in git repositories.');
@@ -28,31 +75,23 @@ async function checkGitRepo(): Promise<boolean> {
 }
 
 async function getTodayCommits(): Promise<string[]> {
-  const today = new Date().toISOString().split('T')[0];
-  const commits = await git.log({
-    since: today,
-    until: today + ' 23:59:59'
-  });
-  
-  return commits.all.map(commit => 
-    `${commit.hash.substring(0, 7)} - ${commit.message} (${commit.author_name})`
-  );
+  try {
+    const output = execSync(`git log --since="midnight" --pretty=format:"%h - %s (%an)"`, 
+      { encoding: 'utf8' });
+    return output.trim() ? output.trim().split('\n') : [];
+  } catch {
+    return [];
+  }
 }
 
 async function getUnpushedCommits(): Promise<string[]> {
   try {
-    const status = await git.status();
-    const currentBranch = status.current;
+    const currentBranch = execSync('git branch --show-current', { encoding: 'utf8' }).trim();
+    if (!currentBranch) return [];
     
-    if (!currentBranch) {
-      return [];
-    }
-
-    const commits = await git.log([`origin/${currentBranch}..HEAD`]);
-    
-    return commits.all.map(commit => 
-      `${commit.hash.substring(0, 7)} - ${commit.message} (${commit.author_name})`
-    );
+    const output = execSync(`git log origin/${currentBranch}..HEAD --pretty=format:"%h - %s (%an)"`, 
+      { encoding: 'utf8' });
+    return output.trim() ? output.trim().split('\n') : [];
   } catch {
     return [];
   }
@@ -60,7 +99,7 @@ async function getUnpushedCommits(): Promise<string[]> {
 
 async function getDiffFromMain(): Promise<string> {
   try {
-    const diff = await git.diff(['main', '--no-pager']);
+    const diff = execSync('git diff main', { encoding: 'utf8' });
     
     const lines = diff.split('\n');
     const filteredLines: string[] = [];
@@ -80,7 +119,11 @@ async function getDiffFromMain(): Promise<string> {
     return filteredLines.join('\n');
   } catch (error) {
     console.warn('⚠️  Could not get diff from main branch, using working directory diff instead');
-    return await git.diff(['--no-pager']);
+    try {
+      return execSync('git diff', { encoding: 'utf8' });
+    } catch {
+      return 'No changes found';
+    }
   }
 }
 
@@ -114,79 +157,58 @@ Please provide a summary that includes:
 Keep the summary concise but informative, focusing on the business value and technical progress made.`;
 }
 
-async function main() {
-  program
-    .name('daily-logger')
-    .description('Generate daily progress logs from git commits and diffs')
-    .version('1.0.0');
+async function handleOutput(prompt: string, options: CliOptions): Promise<void> {
+  if (options.log) {
+    console.log(prompt);
+  } else {
+    const outputFile = options.output || 'prompt.txt';
+    writeFileSync(outputFile, prompt);
+    console.log(`✅ Prompt written to ${outputFile}`);
+  }
+}
 
-  program
-    .command('today')
-    .description('Generate log for today\'s commits')
-    .option('-o, --output <file>', 'Output file (default: prompt.txt)')
-    .option('-l, --log', 'Log to console instead of file')
-    .action(async (options) => {
-      await checkGitRepo();
-      
+async function main() {
+  const { command, options } = parseArgs(process.argv);
+  
+  if (options.help || command === 'help') {
+    showHelp();
+    return;
+  }
+  
+  await checkGitRepo();
+  
+  switch (command) {
+    case 'today': {
       const commits = await getTodayCommits();
       const diff = await getDiffFromMain();
       const prompt = generatePrompt(commits, diff, 'today');
-      
-      if (options.log) {
-        console.log(prompt);
-      } else {
-        const outputFile = options.output || 'prompt.txt';
-        writeFileSync(outputFile, prompt);
-        console.log(`✅ Prompt written to ${outputFile}`);
-      }
-    });
-
-  program
-    .command('unpushed')
-    .description('Generate log for unpushed commits')
-    .option('-o, --output <file>', 'Output file (default: prompt.txt)')
-    .option('-l, --log', 'Log to console instead of file')
-    .action(async (options) => {
-      await checkGitRepo();
-      
+      await handleOutput(prompt, options);
+      break;
+    }
+    
+    case 'unpushed': {
       const commits = await getUnpushedCommits();
       const diff = await getDiffFromMain();
       const prompt = generatePrompt(commits, diff, 'unpushed');
-      
-      if (options.log) {
-        console.log(prompt);
-      } else {
-        const outputFile = options.output || 'prompt.txt';
-        writeFileSync(outputFile, prompt);
-        console.log(`✅ Prompt written to ${outputFile}`);
-      }
-    });
-
-  program
-    .command('both')
-    .description('Generate log for both today\'s and unpushed commits')
-    .option('-o, --output <file>', 'Output file (default: prompt.txt)')
-    .option('-l, --log', 'Log to console instead of file')
-    .action(async (options) => {
-      await checkGitRepo();
-      
+      await handleOutput(prompt, options);
+      break;
+    }
+    
+    case 'both': {
       const todayCommits = await getTodayCommits();
       const unpushedCommits = await getUnpushedCommits();
       const allCommits = [...new Set([...todayCommits, ...unpushedCommits])];
       const diff = await getDiffFromMain();
-      
       const prompt = generatePrompt(allCommits, diff, 'today');
-      
-      if (options.log) {
-        console.log(prompt);
-      } else {
-        const outputFile = options.output || 'prompt.txt';
-        writeFileSync(outputFile, prompt);
-        console.log(`✅ Prompt written to ${outputFile}`);
-      }
-    });
-
-  await program.parseAsync();
+      await handleOutput(prompt, options);
+      break;
+    }
+    
+    default:
+      console.error(`❌ Unknown command: ${command}`);
+      console.log('Run "daily-logger help" for usage information.');
+      process.exit(1);
+  }
 }
 
 main().catch(console.error);
