@@ -22,5 +22,8 @@
     "build": "bun build src/index.ts --outdir dist",
     "start": "bun run dist/index.js",
     "publish": "bun publish --access public"
+  },
+  "dependencies": {
+    "@google/genai": "^1.4.0"
   }
 }

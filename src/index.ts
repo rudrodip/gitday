@@ -1,9 +1,102 @@
 #!/usr/bin/env bun
-// daily-logger
+// gitday
 // log daily progress
 
-import { writeFileSync } from 'fs';
+import { GoogleGenAI } from '@google/genai';
+import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
+import { join } from 'path';
+import { homedir } from 'os';
+
+const CONFIG_FILE = join(homedir(), '.gitday-config.json');
+
+interface Config {
+  apiKey?: string;
+}
+
+function loadConfig(): Config {
+  try {
+    if (existsSync(CONFIG_FILE)) {
+      return JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
+    }
+  } catch (error) {
+    console.warn('⚠️  Could not load config file, creating new one');
+  }
+  return {};
+}
+
+function saveConfig(config: Config): void {
+  try {
+    writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  } catch (error) {
+    console.error('❌ Failed to save config:', error);
+  }
+}
+
+function promptForApiKey(): string {
+  console.log('\n🔑 API Key Setup');
+  console.log('Get your API key from: https://aistudio.google.com/apikey');
+  console.log('Please enter your Gemini API key:');
+  
+  try {
+    const apiKey = execSync('read -s key && echo $key', { 
+      encoding: 'utf8', 
+      stdio: ['inherit', 'pipe', 'inherit'],
+      shell: '/bin/bash'
+    }).trim();
+    
+    if (!apiKey) {
+      console.error('❌ No API key entered');
+      process.exit(1);
+    }
+    
+    return apiKey;
+  } catch (error) {
+    console.error('❌ Failed to read API key');
+    process.exit(1);
+  }
+}
+
+function checkApiKey(): string {
+  let apiKey = process.env.GEMINI_API_KEY;
+  
+  if (apiKey) {
+    return apiKey;
+  }
+  
+  const config = loadConfig();
+  apiKey = config.apiKey;
+  
+  if (apiKey) {
+    return apiKey;
+  }
+  
+  console.log('❌ GEMINI_API_KEY not found in environment or config file');
+  apiKey = promptForApiKey();
+  
+  config.apiKey = apiKey;
+  saveConfig(config);
+  console.log('✅ API key saved to config file');
+  
+  return apiKey;
+}
+
+async function generateSummary(prompt: string): Promise<string> {
+  const apiKey = checkApiKey();
+  const ai = new GoogleGenAI({ apiKey });
+  
+  try {
+    console.log('🤖 Generating summary with AI...');
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-preview-05-20',
+      contents: prompt,
+    });
+    return response.text || '';
+  } catch (error) {
+    console.error('❌ Failed to generate AI summary:', error);
+    throw error;
+  }
+}
 
 const IGNORE_FILES = [
   'package-lock.json',
@@ -40,16 +133,17 @@ function parseArgs(args: string[]): { command: string; options: CliOptions } {
 
 function showHelp(): void {
   console.log(`
-daily-logger v1.0.0
+gitday v1.0.0
 Generate daily progress logs from git commits and diffs
 
 Usage:
-  daily-logger <command> [options]
+  gitday <command> [options]
 
 Commands:
   today      Generate log for today's commits
   unpushed   Generate log for unpushed commits  
   both       Generate log for both today's and unpushed commits
+  config     Manage API key configuration
   help       Show this help message
 
 Options:
@@ -57,10 +151,16 @@ Options:
   -l, --log             Log to console instead of file
   -h, --help            Show help message
 
+Config Commands:
+  config show           Show current API key status
+  config set            Update API key
+  config delete         Remove saved API key
+
 Examples:
-  daily-logger today
-  daily-logger unpushed -o summary.txt
-  daily-logger both --log
+  gitday today
+  gitday unpushed -o summary.txt
+  gitday both --log
+  gitday config show
 `);
 }
 
@@ -159,12 +259,14 @@ One line per item. Skip sections if nothing applies.`;
 }
 
 async function handleOutput(prompt: string, options: CliOptions): Promise<void> {
+  const aiSummary = await generateSummary(prompt);
+
   if (options.log) {
-    console.log(prompt);
+    console.log(aiSummary);
   } else {
     const outputFile = options.output || 'prompt.txt';
-    writeFileSync(outputFile, prompt);
-    console.log(`✅ Prompt written to ${outputFile}`);
+    writeFileSync(outputFile, aiSummary);
+    console.log(`✅ Prompt and AI summary written to ${outputFile}`);
   }
 }
 
@@ -205,9 +307,45 @@ async function main() {
       break;
     }
     
+    case 'config': {
+      const subcommand = process.argv[3] || 'show';
+      
+      switch (subcommand) {
+        case 'show': {
+          const config = loadConfig();
+          console.log('Current API key status:');
+          console.log(config.apiKey ? '✅ API key found' : '❌ No API key saved');
+          break;
+        }
+        
+        case 'set': {
+          const newApiKey = promptForApiKey();
+          const config = loadConfig();
+          config.apiKey = newApiKey;
+          saveConfig(config);
+          console.log('✅ API key updated');
+          break;
+        }
+        
+        case 'delete': {
+          const config = loadConfig();
+          config.apiKey = undefined;
+          saveConfig(config);
+          console.log('✅ API key removed');
+          break;
+        }
+        
+        default:
+          console.error(`❌ Unknown config command: ${subcommand}`);
+          console.log('Run "gitday config help" for usage information.');
+          process.exit(1);
+      }
+      break;
+    }
+    
     default:
       console.error(`❌ Unknown command: ${command}`);
-      console.log('Run "daily-logger help" for usage information.');
+      console.log('Run "gitday help" for usage information.');
       process.exit(1);
   }
 }
