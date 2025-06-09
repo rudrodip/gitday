@@ -1,0 +1,24 @@
+{
+  "name": "daily-logger",
+  "version": "1.0.0",
+  "description": "CLI tool to generate daily progress logs from git commits and diffs",
+  "main": "src/index.ts",
+  "bin": {
+    "daily-logger": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist",
+    "start": "bun run dist/index.js"
+  },
+  "keywords": ["cli", "git", "daily", "logger", "progress"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^11.1.0",
+    "simple-git": "^3.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.0"
+  }
+}
