@@ -1,5 +1,5 @@
 {
-  "name": "daily-logger",
+  "name": "gitday",
   "version": "1.0.0",
   "author": "",
   "main": "src/index.ts",
@@ -7,7 +7,7 @@
     "@types/node": "^20.8.0"
   },
   "bin": {
-    "daily-logger": "./src/index.ts"
+    "gitday": "./src/index.ts"
   },
   "description": "CLI tool to generate daily progress logs from git commits and diffs",
   "keywords": ["cli", "git", "daily", "logger", "progress"],
