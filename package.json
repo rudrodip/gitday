@@ -15,6 +15,7 @@
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun build src/index.ts --outdir dist",
-    "start": "bun run dist/index.js"
+    "start": "bun run dist/index.js",
+    "publish": "bun publish --access public"
   }
 }
