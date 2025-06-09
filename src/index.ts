@@ -130,13 +130,7 @@ async function getDiffFromMain(): Promise<string> {
 function generatePrompt(commits: string[], diff: string, type: 'today' | 'unpushed'): string {
   const commitType = type === 'today' ? 'today' : 'unpushed';
   
-  return `# Daily Progress Summary Request
-
-## Task
-Generate a comprehensive daily progress summary based on the git commits and code changes provided below.
-
-## Context
-This summary is for ${commitType} work in a software development project. Please analyze the commits and code diff to create a meaningful progress report.
+  return `# Daily Progress Summary
 
 ## Commits (${commitType})
 ${commits.length > 0 ? commits.map(commit => `- ${commit}`).join('\n') : 'No commits found'}
@@ -147,14 +141,21 @@ ${diff || 'No changes found'}
 \`\`\`
 
 ## Instructions
-Please provide a summary that includes:
-1. **Overview**: Brief description of what was accomplished
-2. **Key Changes**: Major features, fixes, or improvements made
-3. **Technical Details**: Important technical decisions or implementations
-4. **Files Modified**: Summary of which areas of the codebase were touched
-5. **Impact**: How these changes affect the project
+List only what applies:
 
-Keep the summary concise but informative, focusing on the business value and technical progress made.`;
+**Features:**
+- [new features added]
+
+**Refactors:**
+- [code improvements/restructuring]
+
+**Issues Resolved:**
+- [bugs fixed/issues closed]
+
+**Other:**
+- [anything else noteworthy]
+
+One line per item. Skip sections if nothing applies.`;
 }
 
 async function handleOutput(prompt: string, options: CliOptions): Promise<void> {
