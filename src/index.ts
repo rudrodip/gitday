@@ -12,6 +12,30 @@ const CONFIG_FILE = join(homedir(), '.gitday-config.json');
 
 interface Config {
   apiKey?: string;
+  author?: string;
+}
+
+interface CommitInfo {
+  hash: string;
+  subject: string;
+  body: string;
+  timestamp: string;
+  time: string;
+  author: string;
+  type: 'feature' | 'fix' | 'refactor' | 'docs' | 'other';
+  emoji: string;
+  prNumber?: string;
+  fileStats?: string;
+}
+
+interface CommitStats {
+  count: number;
+  files: number;
+  insertions: number;
+  deletions: number;
+  firstCommit?: string;
+  lastCommit?: string;
+  developmentTime?: string;
 }
 
 function loadConfig(): Config {
@@ -133,17 +157,17 @@ function parseArgs(args: string[]): { command: string; options: CliOptions } {
 
 function showHelp(): void {
   console.log(`
-gitday v1.0.0
-Generate daily progress logs from git commits and diffs
+gitday v2.0.0
+Generate comprehensive daily progress logs from git commits and diffs
 
 Usage:
   gitday <command> [options]
 
 Commands:
-  today      Generate log for today's commits
-  unpushed   Generate log for unpushed commits  
+  today      Generate detailed log for today's commits with stats
+  unpushed   Generate detailed log for unpushed commits with stats  
   both       Generate log for both today's and unpushed commits
-  config     Manage API key configuration
+  config     Manage API key and author configuration
   help       Show this help message
 
 Options:
@@ -152,9 +176,17 @@ Options:
   -h, --help            Show help message
 
 Config Commands:
-  config show           Show current API key status
+  config show           Show current API key and author status
   config set            Update API key
   config delete         Remove saved API key
+
+Features:
+  📊 Commit statistics (count, lines changed, files modified)
+  ⏰ Development time tracking (first to last commit)
+  🚀 Commit categorization with emojis (feat, fix, refactor, docs)
+  🌿 Branch activity overview
+  🔗 PR number extraction
+  👤 Author-specific filtering
 
 Examples:
   gitday today
@@ -174,9 +206,207 @@ async function checkGitRepo(): Promise<boolean> {
   }
 }
 
+function getCommitType(subject: string): { type: CommitInfo['type']; emoji: string } {
+  if (subject.match(/^feat/)) return { type: 'feature', emoji: '✨' };
+  if (subject.match(/^fix/)) return { type: 'fix', emoji: '🐛' };
+  if (subject.match(/^refactor/)) return { type: 'refactor', emoji: '♻️' };
+  if (subject.match(/^docs/)) return { type: 'docs', emoji: '📚' };
+  return { type: 'other', emoji: '🔧' };
+}
+
+function extractPrNumber(subject: string): string | undefined {
+  const match = subject.match(/#(\d+)/);
+  return match ? `#${match[1]}` : undefined;
+}
+
+function getGitAuthor(): string {
+  try {
+    const config = loadConfig();
+    if (config.author) {
+      return config.author;
+    }
+    
+    const author = execSync('git config user.name', { encoding: 'utf8' }).trim();
+    config.author = author;
+    saveConfig(config);
+    return author;
+  } catch {
+    return 'Unknown';
+  }
+}
+
+async function getDetailedCommits(since: string, until?: string, author?: string): Promise<CommitInfo[]> {
+  try {
+    const authorFilter = author ? `--author="${author}"` : '';
+    const timeFilter = until ? 
+      `--since="${since}" --until="${until}"` : 
+      `--since="${since}"`;
+    
+    const output = execSync(
+      `git log ${authorFilter} ${timeFilter} --all --reverse --pretty=format:"%H|%s|%b|%ai|%an"`,
+      { encoding: 'utf8' }
+    );
+    
+    if (!output.trim()) return [];
+    
+    const commits: CommitInfo[] = [];
+    const commitLines = output.trim().split('\n');
+    
+    for (const line of commitLines) {
+      const [hash, subject, body, timestamp, commitAuthor] = line.split('|');
+      if (!hash) continue;
+      
+      const time = timestamp.split(' ')[1].substring(0, 5); // HH:MM
+      const { type, emoji } = getCommitType(subject);
+      const prNumber = extractPrNumber(subject);
+      
+      // Get file stats for this commit
+      let fileStats: string | undefined;
+      try {
+        const stats = execSync(`git show --stat --format="" ${hash}`, { encoding: 'utf8' });
+        const lastLine = stats.trim().split('\n').pop();
+        if (lastLine && lastLine.match(/\d+ files? changed/)) {
+          fileStats = lastLine.replace(/[(),]/g, '');
+        }
+      } catch {
+        // Ignore stats errors
+      }
+      
+      commits.push({
+        hash,
+        subject,
+        body: body || '',
+        timestamp,
+        time,
+        author: commitAuthor,
+        type,
+        emoji,
+        prNumber,
+        fileStats
+      });
+    }
+    
+    return commits;
+  } catch {
+    return [];
+  }
+}
+
+async function getCommitStats(since: string, until?: string, author?: string): Promise<CommitStats> {
+  try {
+    const authorFilter = author ? `--author="${author}"` : '';
+    const timeFilter = until ? 
+      `--since="${since}" --until="${until}"` : 
+      `--since="${since}"`;
+    
+    // Get commit count
+    const countOutput = execSync(
+      `git log ${authorFilter} ${timeFilter} --all --oneline | wc -l`,
+      { encoding: 'utf8' }
+    );
+    const count = parseInt(countOutput.trim());
+    
+    if (count === 0) {
+      return { count: 0, files: 0, insertions: 0, deletions: 0 };
+    }
+    
+    // Get file statistics
+    const statsOutput = execSync(
+      `git log ${authorFilter} ${timeFilter} --all --shortstat`,
+      { encoding: 'utf8' }
+    );
+    
+    let files = 0, insertions = 0, deletions = 0;
+    const statLines = statsOutput.split('\n');
+    for (const line of statLines) {
+      const fileMatch = line.match(/(\d+) files? changed/);
+      const insMatch = line.match(/(\d+) insertions?/);
+      const delMatch = line.match(/(\d+) deletions?/);
+      
+      if (fileMatch) files += parseInt(fileMatch[1]);
+      if (insMatch) insertions += parseInt(insMatch[1]);
+      if (delMatch) deletions += parseInt(delMatch[1]);
+    }
+    
+    // Get first and last commit times for development window
+    const timestampsOutput = execSync(
+      `git log ${authorFilter} ${timeFilter} --all --pretty=format:"%ai"`,
+      { encoding: 'utf8' }
+    );
+    
+    const timestamps = timestampsOutput.trim().split('\n');
+    const firstCommit = timestamps[timestamps.length - 1];
+    const lastCommit = timestamps[0];
+    
+    let developmentTime: string | undefined;
+    if (firstCommit && lastCommit && timestamps.length > 1) {
+      const firstTime = firstCommit.split(' ')[1];
+      const lastTime = lastCommit.split(' ')[1];
+      
+      const firstSeconds = timeToSeconds(firstTime);
+      const lastSeconds = timeToSeconds(lastTime);
+      
+      if (lastSeconds > firstSeconds) {
+        const diffSeconds = lastSeconds - firstSeconds;
+        const hours = Math.floor(diffSeconds / 3600);
+        const minutes = Math.floor((diffSeconds % 3600) / 60);
+        developmentTime = `${hours}h ${minutes}m`;
+      }
+    }
+    
+    return {
+      count,
+      files,
+      insertions,
+      deletions,
+      firstCommit: firstCommit?.split(' ')[1]?.substring(0, 5),
+      lastCommit: lastCommit?.split(' ')[1]?.substring(0, 5),
+      developmentTime
+    };
+  } catch {
+    return { count: 0, files: 0, insertions: 0, deletions: 0 };
+  }
+}
+
+function timeToSeconds(timeString: string): number {
+  const [hours, minutes] = timeString.split(':').map(Number);
+  return hours * 3600 + minutes * 60;
+}
+
+async function getBranchActivity(since: string, author?: string): Promise<{ current: string; activeBranches: string[] }> {
+  try {
+    const current = execSync('git branch --show-current', { encoding: 'utf8' }).trim();
+    
+    const branchesOutput = execSync("git for-each-ref --format='%(refname:short)' refs/heads/", { encoding: 'utf8' });
+    const branches = branchesOutput.trim().split('\n');
+    
+    const activeBranches: string[] = [];
+    const authorFilter = author ? `--author="${author}"` : '';
+    
+    for (const branch of branches) {
+      try {
+        const commitCount = execSync(
+          `git log ${authorFilter} --since="${since}" ${branch} --oneline | wc -l`,
+          { encoding: 'utf8' }
+        );
+        if (parseInt(commitCount.trim()) > 0) {
+          activeBranches.push(branch);
+        }
+      } catch {
+        // Ignore branch errors
+      }
+    }
+    
+    return { current, activeBranches };
+  } catch {
+    return { current: 'unknown', activeBranches: [] };
+  }
+}
+
 async function getTodayCommits(): Promise<string[]> {
   try {
-    const output = execSync(`git log --since="midnight" --pretty=format:"%h - %s (%an)"`, 
+    const author = getGitAuthor();
+    const output = execSync(`git log --author="${author}" --since="midnight" --pretty=format:"%h - %s (%an)"`, 
       { encoding: 'utf8' });
     return output.trim() ? output.trim().split('\n') : [];
   } catch {
@@ -186,10 +416,11 @@ async function getTodayCommits(): Promise<string[]> {
 
 async function getUnpushedCommits(): Promise<string[]> {
   try {
+    const author = getGitAuthor();
     const currentBranch = execSync('git branch --show-current', { encoding: 'utf8' }).trim();
     if (!currentBranch) return [];
     
-    const output = execSync(`git log origin/${currentBranch}..HEAD --pretty=format:"%h - %s (%an)"`, 
+    const output = execSync(`git log --author="${author}" origin/${currentBranch}..HEAD --pretty=format:"%h - %s (%an)"`, 
       { encoding: 'utf8' });
     return output.trim() ? output.trim().split('\n') : [];
   } catch {
@@ -227,13 +458,56 @@ async function getDiffFromMain(): Promise<string> {
   }
 }
 
-function generatePrompt(commits: string[], diff: string, type: 'today' | 'unpushed'): string {
+function generateEnhancedPrompt(commits: CommitInfo[], stats: CommitStats, branchInfo: { current: string; activeBranches: string[] }, diff: string, type: 'today' | 'unpushed'): string {
+  const date = new Date().toLocaleDateString('en-US', { 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  });
+  
+  const author = getGitAuthor();
   const commitType = type === 'today' ? 'today' : 'unpushed';
   
-  return `# Daily Progress Summary
+  let prompt = `# 📊 Daily Development Summary - ${date}
 
-## Commits (${commitType})
-${commits.length > 0 ? commits.map(commit => `- ${commit}`).join('\n') : 'No commits found'}
+**Author:** ${author}
+**Total Commits:** ${stats.count} commits
+**Lines Changed:** ~${stats.insertions + stats.deletions}+ lines across ${stats.files}+ files
+
+## 🚀 Commits & Changes (${commitType})
+`;
+
+  if (commits.length === 0) {
+    prompt += 'No commits found\n\n';
+  } else {
+    for (const commit of commits) {
+      const typeLabel = commit.type.charAt(0).toUpperCase() + commit.type.slice(1);
+      prompt += `**${commit.time}** ${commit.emoji} **${typeLabel}** ${commit.prNumber || ''}
+- ${commit.subject}
+`;
+      if (commit.body.trim()) {
+        prompt += `  ${commit.body.replace(/\n/g, '\n  ')}\n`;
+      }
+      if (commit.fileStats) {
+        prompt += `  *Files: ${commit.fileStats}*\n`;
+      }
+      prompt += '\n';
+    }
+  }
+
+  if (stats.developmentTime && stats.firstCommit && stats.lastCommit) {
+    prompt += `## ⏰ Development Time
+**First Commit:** ${stats.firstCommit}
+**Last Commit:** ${stats.lastCommit}
+**Total Development Window:** ${stats.developmentTime}
+
+`;
+  }
+
+  prompt += `## 🌿 Branch Activity
+**Current Branch:** \`${branchInfo.current}\`
+**Branches with commits ${commitType}:**
+${branchInfo.activeBranches.map(branch => `- \`${branch}\``).join('\n')}
 
 ## Code Changes
 \`\`\`diff
@@ -241,7 +515,7 @@ ${diff || 'No changes found'}
 \`\`\`
 
 ## Instructions
-List only what applies:
+Based on the above commits and changes, provide a concise summary with these sections (only include sections that apply):
 
 **Features:**
 - [new features added]
@@ -256,6 +530,8 @@ List only what applies:
 - [anything else noteworthy]
 
 One line per item. Skip sections if nothing applies.`;
+
+  return prompt;
 }
 
 async function handleOutput(prompt: string, options: CliOptions): Promise<void> {
@@ -279,30 +555,122 @@ async function main() {
   }
   
   await checkGitRepo();
+  const author = getGitAuthor();
   
   switch (command) {
     case 'today': {
-      const commits = await getTodayCommits();
+      const commits = await getDetailedCommits('midnight', undefined, author);
+      const stats = await getCommitStats('midnight', undefined, author);
+      const branchInfo = await getBranchActivity('midnight', author);
       const diff = await getDiffFromMain();
-      const prompt = generatePrompt(commits, diff, 'today');
+      const prompt = generateEnhancedPrompt(commits, stats, branchInfo, diff, 'today');
       await handleOutput(prompt, options);
       break;
     }
     
     case 'unpushed': {
-      const commits = await getUnpushedCommits();
+      const currentBranch = execSync('git branch --show-current', { encoding: 'utf8' }).trim();
+      if (!currentBranch) {
+        console.error('❌ No current branch found');
+        return;
+      }
+      
+      // Get commit hashes for unpushed commits first
+      const unpushedHashes = execSync(`git log --author="${author}" origin/${currentBranch}..HEAD --pretty=format:"%H"`, 
+        { encoding: 'utf8' }).trim().split('\n').filter(h => h);
+      
+      if (unpushedHashes.length === 0) {
+        console.log('No unpushed commits found');
+        return;
+      }
+      
+      // Get detailed info for these specific commits
+      const commits: CommitInfo[] = [];
+      for (const hash of unpushedHashes) {
+        try {
+          const output = execSync(`git show --pretty=format:"%H|%s|%b|%ai|%an" --no-patch ${hash}`, { encoding: 'utf8' });
+          const [, subject, body, timestamp, commitAuthor] = output.split('|');
+          
+          const time = timestamp.split(' ')[1].substring(0, 5);
+          const { type, emoji } = getCommitType(subject);
+          const prNumber = extractPrNumber(subject);
+          
+          let fileStats: string | undefined;
+          try {
+            const stats = execSync(`git show --stat --format="" ${hash}`, { encoding: 'utf8' });
+            const lastLine = stats.trim().split('\n').pop();
+            if (lastLine && lastLine.match(/\d+ files? changed/)) {
+              fileStats = lastLine.replace(/[(),]/g, '');
+            }
+          } catch {}
+          
+          commits.push({
+            hash,
+            subject,
+            body: body || '',
+            timestamp,
+            time,
+            author: commitAuthor,
+            type,
+            emoji,
+            prNumber,
+            fileStats
+          });
+        } catch {}
+      }
+      
+      const stats = await getCommitStats('midnight', undefined, author); // Approximate stats
+      stats.count = commits.length;
+      const branchInfo = await getBranchActivity('midnight', author);
       const diff = await getDiffFromMain();
-      const prompt = generatePrompt(commits, diff, 'unpushed');
+      const prompt = generateEnhancedPrompt(commits, stats, branchInfo, diff, 'unpushed');
       await handleOutput(prompt, options);
       break;
     }
     
     case 'both': {
-      const todayCommits = await getTodayCommits();
-      const unpushedCommits = await getUnpushedCommits();
-      const allCommits = [...new Set([...todayCommits, ...unpushedCommits])];
+      const todayCommits = await getDetailedCommits('midnight', undefined, author);
+      const currentBranch = execSync('git branch --show-current', { encoding: 'utf8' }).trim();
+      
+      let unpushedCommits: CommitInfo[] = [];
+      if (currentBranch) {
+        const unpushedHashes = execSync(`git log --author="${author}" origin/${currentBranch}..HEAD --pretty=format:"%H"`, 
+          { encoding: 'utf8' }).trim().split('\n').filter(h => h);
+        
+        for (const hash of unpushedHashes) {
+          try {
+            const output = execSync(`git show --pretty=format:"%H|%s|%b|%ai|%an" --no-patch ${hash}`, { encoding: 'utf8' });
+            const [, subject, body, timestamp, commitAuthor] = output.split('|');
+            
+            const time = timestamp.split(' ')[1].substring(0, 5);
+            const { type, emoji } = getCommitType(subject);
+            const prNumber = extractPrNumber(subject);
+            
+            unpushedCommits.push({
+              hash,
+              subject,
+              body: body || '',
+              timestamp,
+              time,
+              author: commitAuthor,
+              type,
+              emoji,
+              prNumber
+            });
+          } catch {}
+        }
+      }
+      
+      // Combine and deduplicate commits
+      const allCommitsMap = new Map<string, CommitInfo>();
+      todayCommits.forEach(c => allCommitsMap.set(c.hash, c));
+      unpushedCommits.forEach(c => allCommitsMap.set(c.hash, c));
+      const allCommits = Array.from(allCommitsMap.values());
+      
+      const stats = await getCommitStats('midnight', undefined, author);
+      const branchInfo = await getBranchActivity('midnight', author);
       const diff = await getDiffFromMain();
-      const prompt = generatePrompt(allCommits, diff, 'today');
+      const prompt = generateEnhancedPrompt(allCommits, stats, branchInfo, diff, 'today');
       await handleOutput(prompt, options);
       break;
     }
@@ -313,8 +681,9 @@ async function main() {
       switch (subcommand) {
         case 'show': {
           const config = loadConfig();
-          console.log('Current API key status:');
+          console.log('Current configuration:');
           console.log(config.apiKey ? '✅ API key found' : '❌ No API key saved');
+          console.log(`👤 Author: ${config.author || 'Not set (will use git config)'}`);
           break;
         }
         
