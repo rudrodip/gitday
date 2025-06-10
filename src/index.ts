@@ -134,6 +134,7 @@ interface CliOptions {
   output?: string;
   log?: boolean;
   help?: boolean;
+  noAi?: boolean;
 }
 
 function parseArgs(args: string[]): { command: string; options: CliOptions } {
@@ -149,6 +150,8 @@ function parseArgs(args: string[]): { command: string; options: CliOptions } {
       options.log = true;
     } else if (arg === '-h' || arg === '--help') {
       options.help = true;
+    } else if (arg === '--no-ai') {
+      options.noAi = true;
     }
   }
   
@@ -173,6 +176,7 @@ Commands:
 Options:
   -o, --output <file>   Output file (default: prompt.txt)
   -l, --log             Log to console instead of file
+  --no-ai               Skip AI generation, output raw stats only
   -h, --help            Show help message
 
 Config Commands:
@@ -192,6 +196,7 @@ Examples:
   gitday today
   gitday unpushed -o summary.txt
   gitday both --log
+  gitday today --no-ai
   gitday config show
 `);
 }
@@ -535,14 +540,28 @@ One line per item. Skip sections if nothing applies.`;
 }
 
 async function handleOutput(prompt: string, options: CliOptions): Promise<void> {
-  const aiSummary = await generateSummary(prompt);
+  let output: string;
+  
+  if (options.noAi) {
+    output = prompt;
+    console.log('📊 Raw stats generated (AI generation skipped)');
+  } else {
+    console.log('🤖 Generating AI summary...');
+    try {
+      output = await generateSummary(prompt);
+    } catch (error) {
+      console.warn('⚠️  AI generation failed, falling back to raw stats');
+      output = prompt;
+    }
+  }
 
   if (options.log) {
-    console.log(aiSummary);
+    console.log(output);
   } else {
     const outputFile = options.output || 'prompt.txt';
-    writeFileSync(outputFile, aiSummary);
-    console.log(`✅ Prompt and AI summary written to ${outputFile}`);
+    writeFileSync(outputFile, output);
+    const summaryType = options.noAi ? 'stats' : 'AI summary';
+    console.log(`✅ ${summaryType} written to ${outputFile}`);
   }
 }
 
